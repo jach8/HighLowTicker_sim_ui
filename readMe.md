@@ -21,8 +21,8 @@ This project simulates a stock market by generating price movements for a set of
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd stock-market-simulator
+   git clone https://github.com/jach8/HighLowTicker_sim_ui.git
+   cd HighLowTicker_sim_ui
    ```
 
 2. install python dependencies: 
