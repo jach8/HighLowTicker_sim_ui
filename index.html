@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>High Low Ticker</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.22.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+    }
+    .highlight-low {
+      animation: highlight-low 1s ease-out;
+    }
+    .highlight-high {
+      animation: highlight-high 1s ease-out;
+    }
+    @keyframes highlight-low {
+      0% { background-color: rgba(255, 0, 0, 0.5); }
+      100% { background-color: transparent; }
+    }
+    @keyframes highlight-high {
+      0% { background-color: rgba(0, 255, 0, 0.5); }
+      100% { background-color: transparent; }
+    }
+    .tooltip {
+      position: relative;
+      display: inline-block;
+    }
+    .tooltip .tooltiptext {
+      visibility: hidden;
+      width: 200px;
+      background-color: #555;
+      color: #fff;
+      text-align: center;
+      border-radius: 6px;
+      padding: 5px;
+      position: absolute;
+      z-index: 1;
+      bottom: 125%;
+      left: 50%;
+      margin-left: -100px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .tooltip:hover .tooltiptext {
+      visibility: visible;
+      opacity: 1;
+    }
+    .bar-container {
+      width: 100%;
+      background-color: #1F2937; /* gray-800 */
+      border-radius: 0.25rem;
+      overflow: hidden;
+    }
+    .bar {
+      height: 1.25rem; /* h-5 */
+      transition: width 0.5s ease-in-out; /* Smooth animation for width changes */
+    }
+    .chart-container {
+      position: relative;
+      width: 100%;
+      height: 200px; /* Reduced height to fit better under tables */
+      margin-top: 1rem;
+    }
+    tr {
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body class="bg-gray-900 text-white font-sans">
+  <div id="clock" class="text-white text-right p-2 text-lg mr-4"></div>
+  <div id="root" class="max-w-5xl mx-auto p-6"></div>
+  <script type="text/babel">
+    // Clock update function to display current time
+    function updateClock() {
+      const now = new Date();
+      const options = {
+        hour12: true,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        timeZone: 'America/New_York'
+      };
+      const timeString = now.toLocaleTimeString('en-US', options);
+      document.getElementById('clock').textContent = timeString;
+    }
+
+    // Initialize clock and update every second
+    updateClock();
+    setInterval(updateClock, 1000);
+
+    const HighLowTicker = () => {
+        const [newHighs, setNewHighs] = React.useState({});
+        const [newLows, setNewLows] = React.useState({});
+        const [prevHighs, setPrevHighs] = React.useState({});
+        const [prevLows, setPrevLows] = React.useState({});
+        const [sessionHighs, setSessionHighs] = React.useState([]);
+        const [sessionLows, setSessionLows] = React.useState([]);
+        const [lastHigh, setLastHigh] = React.useState({});
+        const [lastLow, setLastLow] = React.useState({});
+        const [week52Highs, setWeek52Highs] = React.useState(new Set());
+        const [week52Lows, setWeek52Lows] = React.useState(new Set());
+        const [highCounts, setHighCounts] = React.useState({ "30s": 0, "5m": 0, "20m": 0 });
+        const [lowCounts, setLowCounts] = React.useState({ "30s": 0, "5m": 0, "20m": 0 });
+        const [connectionStatus, setConnectionStatus] = React.useState('connecting');
+        const [lastMessageTime, setLastMessageTime] = React.useState(null);
+        const [messageQueue, setMessageQueue] = React.useState([]);
+        const [sortConfig, setSortConfig] = React.useState({ key: 'timestamp', direction: 'desc', table: 'highs' });
+        const [priceHistory, setPriceHistory] = React.useState({});
+        const [speedMultiplier, setSpeedMultiplier] = React.useState(0.0); // Default to 0 (paused)
+        const [volatilityMultiplier, setVolatilityMultiplier] = React.useState(1.0);
+        const [selectedHighSymbol, setSelectedHighSymbol] = React.useState(''); // For Highs chart
+        const [selectedLowSymbol, setSelectedLowSymbol] = React.useState('');   // For Lows chart
+        const highChartRef = React.useRef(null);
+        const lowChartRef = React.useRef(null);
+        const highChartInstanceRef = React.useRef(null);
+        const lowChartInstanceRef = React.useRef(null);
+
+        const wsRef = React.useRef(null);
+        const isProcessingRef = React.useRef(false);
+
+        // Define trading session boundaries (8:00 AM to 8:00 PM EDT on May 24, 2025)
+        const sessionStart = Date.parse("2025-05-24T08:00:00-04:00"); // 8:00 AM EDT
+        const sessionEnd = Date.parse("2025-05-24T20:00:00-04:00");   // 8:00 PM EDT
+
+        React.useEffect(() => {
+            let ws;
+            let reconnectAttempts = 0;
+            const maxReconnectAttempts = 10;
+            const reconnectInterval = 5000;
+
+            const connectWebSocket = () => {
+                console.log("Connecting to WebSocket server...");
+                ws = new WebSocket('ws://localhost:8080');
+                wsRef.current = ws;
+
+                ws.onopen = () => {
+                    console.log('Connected to WebSocket server');
+                    setConnectionStatus('connected');
+                    setLastMessageTime(Date.now());
+                    reconnectAttempts = 0;
+                    ws.send(JSON.stringify({ type: 'setSpeed', value: speedMultiplier }));
+                    ws.send(JSON.stringify({ type: 'setVolatility', value: volatilityMultiplier }));
+                };
+
+                ws.onmessage = (event) => {
+                    setLastMessageTime(Date.now());
+                    try {
+                        const data = JSON.parse(event.data);
+                        setMessageQueue(prev => [...prev, data]);
+                    } catch (error) {
+                        console.error('Error processing WebSocket message:', error, 'Raw message:', event.data);
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    setConnectionStatus('error');
+                };
+
+                ws.onclose = (event) => {
+                    console.log('WebSocket connection closed:', event.code, event.reason);
+                    setConnectionStatus('closed');
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        console.log(`Reconnecting in ${reconnectInterval/1000} seconds... (Attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})`);
+                        setTimeout(() => {
+                            reconnectAttempts++;
+                            connectWebSocket();
+                        }, reconnectInterval);
+                    } else {
+                        console.error('Max reconnection attempts reached. Please refresh the page to try again.');
+                        setConnectionStatus('error');
+                    }
+                };
+
+                const pingInterval = setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send('ping');
+                        console.log('Sent ping to keep WebSocket alive');
+                    }
+                }, 30000);
+
+                return () => {
+                    clearInterval(pingInterval);
+                    ws.close();
+                };
+            };
+
+            connectWebSocket();
+
+            return () => {
+                if (ws) ws.close();
+            };
+        }, []);
+
+        React.useEffect(() => {
+            const timeoutInterval = setInterval(() => {
+                if (lastMessageTime && Date.now() - lastMessageTime > 60000) {
+                    console.log('No messages received for 60 seconds, market may be closed. Schwab API hours are 8AM to 8PM EST.');
+                    setConnectionStatus('timeout');
+                }
+            }, 5000);
+
+            return () => clearInterval(timeoutInterval);
+        }, [lastMessageTime]);
+
+        React.useEffect(() => {
+            if (messageQueue.length === 0 || isProcessingRef.current) return;
+
+            isProcessingRef.current = true;
+            const data = messageQueue[0];
+
+            const timestamp = performance.now();
+            setLastHigh(data.lastHigh);
+            setLastLow(data.lastLow);
+            const newWeek52Highs = new Set(data.week52Highs);
+            const newWeek52Lows = new Set(data.week52Lows);
+            setWeek52Highs(newWeek52Highs);
+            setWeek52Lows(newWeek52Lows);
+            setHighCounts(prev => {
+                console.log('Updating highCounts:', data.highCounts);
+                return { ...data.highCounts };
+            });
+            setLowCounts(prev => {
+                console.log('Updating lowCounts:', data.lowCounts);
+                return { ...data.lowCounts };
+            });
+
+            const max_show_count = 30;
+
+            const newHighEntries = [];
+            Object.entries(data.newHighs).forEach(([symbol, count]) => {
+                if (count > 0 && data.lastHigh[symbol] && data.percentChange[symbol] !== undefined) {
+                    const prevCount = prevHighs[symbol] || 0;
+                    if (count > prevCount) {
+                        newHighEntries.push({
+                            symbol,
+                            count,
+                            timestamp,
+                            price: data.lastHigh[symbol],
+                            percentChange: data.percentChange[symbol]
+                        });
+                    }
+                }
+            });
+
+            setSessionHighs(prev => {
+                const updated = [...newHighEntries, ...prev]
+                    .sort((a, b) => b.timestamp - a.timestamp)
+                    .slice(0, max_show_count);
+                return updated;
+            });
+
+            setPrevHighs(data.newHighs);
+            setNewHighs(data.newHighs);
+
+            const newLowEntries = [];
+            Object.entries(data.newLows).forEach(([symbol, count]) => {
+                if (count > 0 && data.lastLow[symbol] && data.percentChange[symbol] !== undefined) {
+                    const prevCount = prevLows[symbol] || 0;
+                    if (count > prevCount) {
+                        newLowEntries.push({
+                            symbol,
+                            count,
+                            timestamp,
+                            price: data.lastLow[symbol],
+                            percentChange: data.percentChange[symbol]
+                        });
+                    }
+                }
+            });
+
+            setSessionLows(prev => {
+                const updated = [...newLowEntries, ...prev]
+                    .sort((a, b) => b.timestamp - a.timestamp)
+                    .slice(0, max_show_count);
+                return updated;
+            });
+
+            setPrevLows(data.newLows);
+            setNewLows(data.newLows);
+
+            setPriceHistory(prev => {
+                const updated = { ...prev };
+                const now = Date.now();
+                // Only add data if within trading session
+                if (now >= sessionStart && now <= sessionEnd) {
+                    data.content?.forEach(stock => {
+                        const symbol = stock.key;
+                        const price = stock.LAST_PRICE;
+                        if (!updated[symbol]) {
+                            updated[symbol] = [];
+                        }
+                        updated[symbol].push({ timestamp: now, price });
+                        // Keep only data within the trading session
+                        updated[symbol] = updated[symbol].filter(entry => 
+                            entry.timestamp >= sessionStart && entry.timestamp <= sessionEnd
+                        );
+                        // Limit to 50 points
+                        if (updated[symbol].length > 50) {
+                            updated[symbol] = updated[symbol].slice(-50);
+                        }
+                    });
+                }
+                return updated;
+            });
+
+            // Set initial symbols for charts if not already set
+            if (!selectedHighSymbol && newHighEntries.length > 0) {
+                setSelectedHighSymbol(newHighEntries[0].symbol);
+            }
+            if (!selectedLowSymbol && newLowEntries.length > 0) {
+                setSelectedLowSymbol(newLowEntries[0].symbol);
+            }
+
+            setMessageQueue(prev => prev.slice(1));
+            isProcessingRef.current = false;
+        }, [messageQueue, selectedHighSymbol, selectedLowSymbol]);
+
+        // Compute chart data for the trading session
+        const getChartData = (symbol) => {
+            if (!symbol || !priceHistory[symbol]) return { labels: [], prices: [] };
+
+            // Filter data within the trading session (already done in setPriceHistory, but ensure here for safety)
+            const filtered = priceHistory[symbol].filter(entry => 
+                entry.timestamp >= sessionStart && entry.timestamp <= sessionEnd
+            );
+
+            const labels = filtered.map(entry => {
+                return new Date(entry.timestamp).toLocaleTimeString('en-US', {
+                    hour12: true,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    timeZone: 'America/New_York'
+                });
+            });
+            const prices = filtered.map(entry => entry.price);
+
+            return { labels, prices };
+        };
+
+        // Initialize Highs chart
+        React.useEffect(() => {
+            if (!selectedHighSymbol || !priceHistory[selectedHighSymbol]) return;
+
+            const ctx = highChartRef.current?.getContext('2d');
+            if (!ctx) return;
+
+            if (highChartInstanceRef.current) {
+                highChartInstanceRef.current.destroy();
+            }
+
+            const { labels, prices } = getChartData(selectedHighSymbol);
+
+            highChartInstanceRef.current = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: `${selectedHighSymbol} Price`,
+                        data: prices,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time (EDT)',
+                                color: '#ffffff'
+                            },
+                            ticks: {
+                                color: '#ffffff',
+                                maxTicksLimit: 5 // Reduced due to smaller chart size
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Price ($)',
+                                color: '#ffffff'
+                            },
+                            ticks: {
+                                color: '#ffffff'
+                            },
+                            beginAtZero: false
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#ffffff'
+                            }
+                        }
+                    }
+                }
+            });
+
+            return () => {
+                if (highChartInstanceRef.current) {
+                    highChartInstanceRef.current.destroy();
+                }
+            };
+        }, [selectedHighSymbol]);
+
+        // Update Highs chart data when priceHistory changes
+        React.useEffect(() => {
+            if (!highChartInstanceRef.current || !selectedHighSymbol || !priceHistory[selectedHighSymbol]) return;
+
+            const { labels, prices } = getChartData(selectedHighSymbol);
+            highChartInstanceRef.current.data.labels = labels;
+            highChartInstanceRef.current.data.datasets[0].data = prices;
+            highChartInstanceRef.current.data.datasets[0].label = `${selectedHighSymbol} Price`;
+            highChartInstanceRef.current.update();
+        }, [priceHistory, selectedHighSymbol]);
+
+        // Initialize Lows chart
+        React.useEffect(() => {
+            if (!selectedLowSymbol || !priceHistory[selectedLowSymbol]) return;
+
+            const ctx = lowChartRef.current?.getContext('2d');
+            if (!ctx) return;
+
+            if (lowChartInstanceRef.current) {
+                lowChartInstanceRef.current.destroy();
+            }
+
+            const { labels, prices } = getChartData(selectedLowSymbol);
+
+            lowChartInstanceRef.current = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: `${selectedLowSymbol} Price`,
+                        data: prices,
+                        borderColor: 'rgba(75, 192, 192, 1)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
+                        fill: true,
+                        tension: 0.1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time (EDT)',
+                                color: '#ffffff'
+                            },
+                            ticks: {
+                                color: '#ffffff',
+                                maxTicksLimit: 5 // Reduced due to smaller chart size
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Price ($)',
+                                color: '#ffffff'
+                            },
+                            ticks: {
+                                color: '#ffffff'
+                            },
+                            beginAtZero: false
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#ffffff'
+                            }
+                        }
+                    }
+                }
+            });
+
+            return () => {
+                if (lowChartInstanceRef.current) {
+                    lowChartInstanceRef.current.destroy();
+                }
+            };
+        }, [selectedLowSymbol]);
+
+        // Update Lows chart data when priceHistory changes
+        React.useEffect(() => {
+            if (!lowChartInstanceRef.current || !selectedLowSymbol || !priceHistory[selectedLowSymbol]) return;
+
+            const { labels, prices } = getChartData(selectedLowSymbol);
+            lowChartInstanceRef.current.data.labels = labels;
+            lowChartInstanceRef.current.data.datasets[0].data = prices;
+            lowChartInstanceRef.current.data.datasets[0].label = `${selectedLowSymbol} Price`;
+            lowChartInstanceRef.current.update();
+        }, [priceHistory, selectedLowSymbol]);
+
+        const sortData = (data, key, direction) => {
+            return [...data].sort((a, b) => {
+                if (direction === 'asc') {
+                    return a[key] > b[key] ? 1 : -1;
+                }
+                return a[key] < b[key] ? 1 : -1;
+            });
+        };
+
+        const handleSort = (key, table) => {
+            setSortConfig(prev => ({
+                key,
+                direction: prev.key === key && prev.direction === 'desc' ? 'asc' : 'desc',
+                table
+            }));
+        };
+
+        const handleHighStockClick = (symbol) => {
+            setSelectedHighSymbol(symbol);
+        };
+
+        const handleLowStockClick = (symbol) => {
+            setSelectedLowSymbol(symbol);
+        };
+
+        const sortedHighs = sortConfig.table === 'highs'
+            ? sortData(sessionHighs, sortConfig.key, sortConfig.direction)
+            : sessionHighs;
+        const sortedLows = sortConfig.table === 'lows'
+            ? sortData(sessionLows, sortConfig.key, sortConfig.direction)
+            : sessionLows;
+
+        const { high30sWidth, high5mWidth, high20mWidth } = React.useMemo(() => {
+            const maxCounts = { "30s": 10, "5m": 50, "20m": 100 };
+            return {
+                high30sWidth: Math.min((highCounts["30s"] / maxCounts["30s"]) * 100, 100),
+                high5mWidth: Math.min((highCounts["5m"] / maxCounts["5m"]) * 100, 100),
+                high20mWidth: Math.min((highCounts["20m"] / maxCounts["20m"]) * 100, 100),
+            };
+        }, [highCounts]);
+
+        const { low30sWidth, low5mWidth, low20mWidth } = React.useMemo(() => {
+            const maxCounts = { "30s": 10, "5m": 50, "20m": 100 };
+            return {
+                low30sWidth: Math.min((lowCounts["30s"] / maxCounts["30s"]) * 100, 100),
+                low5mWidth: Math.min((lowCounts["5m"] / maxCounts["5m"]) * 100, 100),
+                low20mWidth: Math.min((lowCounts["20m"] / maxCounts["20m"]) * 100, 100),
+            };
+        }, [lowCounts]);
+
+        const handleSpeedChange = (e) => {
+            const value = parseFloat(e.target.value);
+            setSpeedMultiplier(value);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'setSpeed', value }));
+            }
+        };
+
+        const handleVolatilityChange = (e) => {
+            const value = parseFloat(e.target.value);
+            setVolatilityMultiplier(value);
+            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'setVolatility', value }));
+            }
+        };
+
+        if (connectionStatus === 'connecting') {
+            return <div className="text-center">Connecting to server...</div>;
+        }
+
+        if (connectionStatus === 'error' || connectionStatus === 'closed') {
+            return <div className="text-red-500 text-center">Connection Error: Please ensure the backend is running.</div>;
+        }
+
+        if (connectionStatus === 'timeout') {
+            return <div className="text-yellow-500 text-center">No data received for 60 seconds. Market may be closed.</div>;
+        }
+
+        return (
+            <div>
+                <div className="flex justify-between items-center mb-6">
+                    <h1 className="text-2xl font-bold">
+                        <span>
+                            <span className="text-green-500">▲</span>
+                            High Low Ticker
+                            <span className="text-red-500">▼</span>
+                        </span>
+                    </h1>
+                    <div className="text-sm">
+                        Status: <span className={connectionStatus === 'connected' ? 'text-green-500' : 'text-red-500'}>
+                            {connectionStatus.charAt(0).toUpperCase() + connectionStatus.slice(1)}
+                        </span>
+                    </div>
+                </div>
+
+                <div className="mb-6">
+                    <div className="flex flex-col md:flex-row gap-4">
+                        <div className="w-full md:w-1/2">
+                            <label className="block text-sm font-medium mb-2">
+                                Simulation Speed: {speedMultiplier.toFixed(1)}x
+                            </label>
+                            <input
+                                type="range"
+                                min="0.0" // Allow 0 to pause the simulation
+                                max="2.0"
+                                step="0.1"
+                                value={speedMultiplier}
+                                onChange={handleSpeedChange}
+                                className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                            />
+                        </div>
+                        <div className="w-full md:w-1/2">
+                            <label className="block text-sm font-medium mb-2">
+                                Volatility: {volatilityMultiplier.toFixed(1)}x
+                            </label>
+                            <input
+                                type="range"
+                                min="0.5"
+                                max="2.0"
+                                step="0.1"
+                                value={volatilityMultiplier}
+                                onChange={handleVolatilityChange}
+                                className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex flex-col md:flex-row mb-6 gap-4">
+                    <div className="w-full md:w-1/2">
+                        <div className="tooltip">
+                            <h2 className="text-lg font-semibold text-red-500 mb-2">New Lows</h2>
+                            <span className="tooltiptext">Stocks reaching a new low price for the day.</span>
+                        </div>
+                        <div className="flex items-center mb-2">
+                            <span className="w-16 text-sm">Last 20m:</span>
+                            <div className="bar-container flex-1">
+                                <div
+                                    className={`bar ${lowCounts["20m"] > 0 ? 'bg-red-500' : 'bg-gray-900'}`}
+                                    style={{ width: `${low20mWidth}%` }}
+                                >
+                                    <span className="text-xs text-white pl-2">{lowCounts["20m"]}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center mb-2">
+                            <span className="w-16 text-sm">Last 5m:</span>
+                            <div className="bar-container flex-1">
+                                <div
+                                    className={`bar ${lowCounts["5m"] > 0 ? 'bg-red-500' : 'bg-gray-900'}`}
+                                    style={{ width: `${low5mWidth}%` }}
+                                >
+                                    <span className="text-xs text-white pl-2">{lowCounts["5m"]}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center">
+                            <span className="w-16 text-sm">Last 30s:</span>
+                            <div className="bar-container flex-1">
+                                <div
+                                    className={`bar ${lowCounts["30s"] > 0 ? 'bg-red-500' : 'bg-gray-900'}`}
+                                    style={{ width: `${low30sWidth}%` }}
+                                >
+                                    <span className="text-xs text-white pl-2">{lowCounts["30s"]}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="w-full md:w-1/2">
+                        <div className="tooltip">
+                            <h2 className="text-lg font-semibold text-green-500 mb-2">New Highs</h2>
+                            <span className="tooltiptext">Stocks reaching a new high price for the day.</span>
+                        </div>
+                        <div className="flex items-center mb-2">
+                            <span className="w-16 text-sm">Last 20m:</span>
+                            <div className="bar-container flex-1">
+                                <div
+                                    className={`bar ${highCounts["20m"] > 0 ? 'bg-green-500' : 'bg-gray-900'}`}
+                                    style={{ width: `${high20mWidth}%` }}
+                                >
+                                    <span className="text-xs text-white pl-2">{highCounts["20m"]}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center mb-2">
+                            <span className="w-16 text-sm">Last 5m:</span>
+                            <div className="bar-container flex-1">
+                                <div
+                                    className={`bar ${highCounts["5m"] > 0 ? 'bg-green-500' : 'bg-gray-900'}`}
+                                    style={{ width: `${high5mWidth}%` }}
+                                >
+                                    <span className="text-xs text-white pl-2">{highCounts["5m"]}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center">
+                            <span className="w-16 text-sm">Last 30s:</span>
+                            <div className="bar-container flex-1">
+                                <div
+                                    className={`bar ${highCounts["30s"] > 0 ? 'bg-green-500' : 'bg-gray-900'}`}
+                                    style={{ width: `${high30sWidth}%` }}
+                                >
+                                    <span className="text-xs text-white pl-2">{highCounts["30s"]}</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="flex flex-col md:flex-row gap-4 mb-6">
+                    <div className="w-full md:w-1/2">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="bg-gray-700">
+                                    <th className="p-3 cursor-pointer" onClick={() => handleSort('symbol', 'lows')}>
+                                        Symbol {sortConfig.table === 'lows' && sortConfig.key === 'symbol' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
+                                    </th>
+                                    <th className="p-3 cursor-pointer" onClick={() => handleSort('price', 'lows')}>
+                                        Price / Change {sortConfig.table === 'lows' && sortConfig.key === 'price' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
+                                    </th>
+                                    <th className="p-3 cursor-pointer" onClick={() => handleSort('count', 'lows')}>
+                                        Count {sortConfig.table === 'lows' && sortConfig.key === 'count' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {sortedLows.map((entry, index) => (
+                                    <tr
+                                        key={`${entry.symbol}-${entry.timestamp}`}
+                                        className={`${(week52Lows && week52Lows.has(entry.symbol)) ? 'bg-red-500 font-bold border-2 border-red-300' : 'bg-gray-800'} ${index === 0 ? 'highlight-low' : ''}`}
+                                        onClick={() => handleLowStockClick(entry.symbol)}
+                                    >
+                                        <td className="p-3">{entry.symbol} {(week52Lows && week52Lows.has(entry.symbol)) && <span className="text-red-300">↓</span>}</td>
+                                        <td className="p-3">
+                                            ${entry.price.toFixed(2)} 
+                                            <span className="ml-2 text-sm">
+                                                ({entry.percentChange.toFixed(2)}%
+                                                {entry.percentChange >= 0 ? (
+                                                    <span className="text-green-700">▲</span>
+                                                ) : (
+                                                    <span className="text-red-700">▼</span>
+                                                )})
+                                            </span>
+                                        </td>
+                                        <td className="p-3">{entry.count}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        {selectedLowSymbol && priceHistory[selectedLowSymbol] && (
+                            <div className="chart-container">
+                                <canvas ref={lowChartRef}></canvas>
+                            </div>
+                        )}
+                    </div>
+                    <div className="w-full md:w-1/2">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="bg-gray-700">
+                                    <th className="p-3 cursor-pointer" onClick={() => handleSort('symbol', 'highs')}>
+                                        Symbol {sortConfig.table === 'highs' && sortConfig.key === 'symbol' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
+                                    </th>
+                                    <th className="p-3 cursor-pointer" onClick={() => handleSort('price', 'highs')}>
+                                        Price / Change {sortConfig.table === 'highs' && sortConfig.key === 'price' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
+                                    </th>
+                                    <th className="p-3 cursor-pointer" onClick={() => handleSort('count', 'highs')}>
+                                        Count {sortConfig.table === 'highs' && sortConfig.key === 'count' ? (sortConfig.direction === 'asc' ? '↑' : '↓') : ''}
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {sortedHighs.map((entry, index) => (
+                                    <tr
+                                        key={`${entry.symbol}-${entry.timestamp}`}
+                                        className={`${(week52Highs && week52Highs.has(entry.symbol)) ? 'bg-green-500 font-bold border-2 border-green-300' : 'bg-gray-800'} ${index === 0 ? 'highlight-high' : ''}`}
+                                        onClick={() => handleHighStockClick(entry.symbol)}
+                                    >
+                                        <td className="p-3">{entry.symbol} {(week52Highs && week52Highs.has(entry.symbol)) && <span className="text-green-300">↑</span>}</td>
+                                        <td className="p-3">
+                                            ${entry.price.toFixed(2)} 
+                                            <span className="ml-2 text-sm">
+                                                ({entry.percentChange.toFixed(2)}%
+                                                {entry.percentChange >= 0 ? (
+                                                    <span className="text-green-700">▲</span>
+                                                ) : (
+                                                    <span className="text-red-700">▼</span>
+                                                )})
+                                            </span>
+                                        </td>
+                                        <td className="p-3">{entry.count}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                        {selectedHighSymbol && priceHistory[selectedHighSymbol] && (
+                            <div className="chart-container">
+                                <canvas ref={highChartRef}></canvas>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<HighLowTicker />);
+  </script>
+</body>
+</html>

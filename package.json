@@ -1,0 +1,16 @@
+{
+    "name": "stock-market-simulator",
+    "version": "1.0.0",
+    "description": "A stock market simulator with a real-time UI",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "serve-ui": "http-server -p 8000"
+    },
+    "dependencies": {
+        "ws": "^8.18.0"
+    },
+    "devDependencies": {
+        "http-server": "^14.1.1"
+    }
+}
