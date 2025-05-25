@@ -7,6 +7,7 @@ import numpy as np
 import time
 from collections import defaultdict
 
+
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
@@ -25,7 +26,8 @@ class HighLowTicker:
         self.new_lows = defaultdict(int)
         self.last_high = {}
         self.last_low = {}
-        self.last_pct_change = {}  # Added to track percent change
+        self.last_price = {}
+        self.last_pct_change = {}
         self.current_week52_highs = set()
         self.current_week52_lows = set()
         self.week52_high_prices = {}
@@ -43,12 +45,14 @@ class HighLowTicker:
         daily_low = stock.get('LOW_PRICE')
         week52_high = stock.get('HIGH_PRICE_52_WEEK')
         week52_low = stock.get('LOW_PRICE_52_WEEK')
-        percent_change = stock.get('NET_CHANGE_PERCENT')  # Added
+        percent_change = stock.get('NET_CHANGE_PERCENT')
         current_time = time.time()
 
         if not symbol or price is None or price == 0:
             logger.warning(f"Invalid stock data: {stock}")
             return False
+
+        self.last_price[symbol] = price
 
         daily_high = daily_high if daily_high is not None else self.last_high.get(symbol, price)
         daily_low = daily_low if daily_low is not None else self.last_low.get(symbol, price)
@@ -63,14 +67,14 @@ class HighLowTicker:
         if symbol not in self.initialized_symbols:
             self.last_high[symbol] = daily_high
             self.last_low[symbol] = daily_low
-            self.last_pct_change[symbol] = percent_change if percent_change is not None else 0  # Initialize percent change
+            self.last_pct_change[symbol] = percent_change if percent_change is not None else 0
             self.initialized_symbols.add(symbol)
             if daily_high >= week52_high:
                 self.current_week52_highs.add(symbol)
             if daily_low <= week52_low:
                 self.current_week52_lows.add(symbol)
         else:
-            self.last_pct_change[symbol] = percent_change if percent_change is not None else self.last_pct_change.get(symbol, 0)  # Update percent change
+            self.last_pct_change[symbol] = percent_change if percent_change is not None else self.last_pct_change.get(symbol, 0)
             if daily_high > self.last_high[symbol]:
                 self.new_highs[symbol] += 1
                 self.last_high[symbol] = daily_high
@@ -129,5 +133,6 @@ class HighLowTicker:
             "messageCount": self.message_count,
             "highCounts": high_counts,
             "lowCounts": low_counts,
-            "percentChange": self.last_pct_change  # Added to state
+            "percentChange": self.last_pct_change,
+            "content": [{"key": symbol, "LAST_PRICE": self.last_price.get(symbol, 0)} for symbol in self.initialized_symbols]
         }
