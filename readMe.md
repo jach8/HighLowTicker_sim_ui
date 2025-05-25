@@ -1,7 +1,3 @@
-
-
-![til](HighLowTicker.gif)
-
 # High Low Ticker Counter and Market Simulator
 
 A Python-based stock market simulator that generates synthetic stock price data and tracks new 52-week highs and lows for a list of symbols, with a real-time web UI to display the results.
@@ -99,8 +95,7 @@ MIT License
 
 
 
+----
+### Example of the Ticker in Action 
 
-
-
-
-
+![til](HighLowTicker.gif)
