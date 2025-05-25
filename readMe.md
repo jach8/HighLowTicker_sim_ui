@@ -1,10 +1,8 @@
 
 
-<video width="750" height="400" controls>
-  <source src="HighLowTicker.mov" type="video/mp4">
-</video>
+![til](HighLowTicker.gif)
 
-# Stock Market Simulator
+# High Low Ticker Counter and Market Simulator
 
 A Python-based stock market simulator that generates synthetic stock price data and tracks new 52-week highs and lows for a list of symbols, with a real-time web UI to display the results.
 
