@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class StockMarketSimulator:
-    def __init__(self, queue_size=1):
+    def __init__(self, queue_size=100):
         logger.info("Initializing StockMarketSimulator")
         self.symbols = self.load_symbols()
         self.queue = asyncio.Queue(queue_size)
@@ -199,7 +199,7 @@ class StockMarketSimulator:
                 await self.queue.put(simulated_msg)
                 logger.debug(f"Added simulated message to queue, queue size: {self.queue.qsize()}")
 
-                base_delay = self.update_rate() * 2
+                base_delay = self.update_rate() 
                 sleep_delay_time = base_delay / self.speed_multiplier
                 logger.debug(f"Sleep delay: {sleep_delay_time} seconds (speed multiplier: {self.speed_multiplier})")
                 await asyncio.sleep(sleep_delay_time)
